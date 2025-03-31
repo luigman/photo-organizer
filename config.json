@@ -1,0 +1,6 @@
+{
+    "watch_paths": [
+      "/data/photos"
+    ],
+    "output_path": "/data/output"
+  }

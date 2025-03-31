@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  photo-organizer:
+    build: .
+    container_name: photo-organizer
+    volumes:
+      # Mount your photo directories here (add as many as needed)
+      - ./test/input:/data/photos/dir1
+      # - /path/to/photos2:/data/photos/dir2
+      # Mount your output directory here
+      - ./test/output:/data/output
+      # Mount configuration (if you want to modify it externally)
+      - ./config.json:/app/config.json
+    restart: unless-stopped
+    # Uncomment the following line to run in dry-run mode
+    command: ["python", "photo_organizer.py", "--scan-existing", "--dry-run"]
