@@ -70,6 +70,14 @@ The application supports the following command line options:
 - `--dry-run`: Run in dry-run mode (no files will be copied)
 - `--scan-existing`: Scan and process existing files in watch directories at startup
 
+## Building the container
+
+```
+echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+docker build -t ghcr.io/YOUR_GITHUB_USERNAME/photo-organizer:latest .
+docker push ghcr.io/YOUR_GITHUB_USERNAME/photo-organizer:latest
+```
+
 ## Troubleshooting
 
 ### Checking Logs

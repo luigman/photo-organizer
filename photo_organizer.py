@@ -56,7 +56,7 @@ class PhotoOrganizer:
                                     date_str = exif_data[tag_id]
                                     return datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
                 except Exception as e:
-                    logger.debug(f"Could not extract EXIF data from {file_path}: {e}")
+                    logger.warning(f"Could not extract EXIF data from {file_path}: {e}")
             
             # Handle video files
             elif file_ext in self.supported_extensions['videos']:
@@ -67,7 +67,7 @@ class PhotoOrganizer:
                         date_str = probe['format']['tags']['creation_time']
                         return datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S.%fZ')
                 except Exception as e:
-                    logger.debug(f"Could not extract video metadata from {file_path}: {e}")
+                    logger.warning(f"Could not extract video metadata from {file_path}: {e}")
             
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
