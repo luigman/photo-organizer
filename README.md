@@ -8,7 +8,8 @@ A Docker-based application that automatically organizes your photos and videos b
 - Organize files by date in the format `output_path/YYYY/YYYY-MM-DD/original_filename`
 - Extract dates from EXIF metadata for images and videos
 - Dry-run mode to preview file organization without making changes
-- Never overwrites: identical files are skipped, name conflicts get a numeric suffix (e.g. `IMG_0001_1.jpg`)
+- Never overwrites: a photo is skipped if the output already has the same picture at equal or better quality (or within 10% resolution and size); otherwise it is copied next to it with a numeric suffix (e.g. `IMG_0001_1.jpg`)
+- Skip list: processed files are recorded in `.photo-organizer-skiplist.db` in the output directory (SQLite, keyed by path + size + modified time) so unchanged files are not re-analyzed on later scans. Dry runs read it but never write it. Delete the file to force a full re-evaluation.
 - Process existing files at startup
 - Supports common image formats (JPG, PNG, GIF, BMP, TIFF, HEIC, WEBP)
 - Supports common video formats (MP4, MOV, AVI, MKV, WEBM, MPG, M4V)
