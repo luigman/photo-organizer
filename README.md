@@ -8,7 +8,7 @@ A Docker-based application that automatically organizes your photos and videos b
 - Organize files by date in the format `output_path/YYYY/YYYY-MM-DD/original_filename`
 - Extract dates from EXIF metadata for images and videos
 - Dry-run mode to preview file organization without making changes
-- Skip existing files to prevent duplicates
+- Never overwrites: identical files are skipped, name conflicts get a numeric suffix (e.g. `IMG_0001_1.jpg`)
 - Process existing files at startup
 - Supports common image formats (JPG, PNG, GIF, BMP, TIFF, HEIC, WEBP)
 - Supports common video formats (MP4, MOV, AVI, MKV, WEBM, MPG, M4V)

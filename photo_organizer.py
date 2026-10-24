@@ -1,5 +1,7 @@
 import os
 import shutil
+import hashlib
+import threading
 import time
 import json
 import logging
@@ -27,6 +29,8 @@ class PhotoOrganizer:
         self.watch_paths = watch_paths
         self.output_path = output_path
         self.dry_run = dry_run
+        self._lock = threading.Lock()
+        self.validate_paths(watch_paths, output_path)
         self.supported_extensions = {
             'images': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.heic', '.webp'],
             'videos': ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.mpg', '.m4v']
@@ -34,6 +38,88 @@ class PhotoOrganizer:
         logger.info(f"Photo Organizer initialized with watch paths: {watch_paths}")
         logger.info(f"Output path: {output_path}")
         logger.info(f"Dry run mode: {dry_run}")
+
+    @staticmethod
+    def _is_within(path, parent):
+        path = os.path.realpath(path)
+        parent = os.path.realpath(parent)
+        return os.path.commonpath([path, parent]) == parent
+
+    @classmethod
+    def validate_paths(cls, watch_paths, output_path):
+        """
+        Refuse configurations where the output directory and a watch directory
+        overlap, which would make the organizer re-process its own output.
+        """
+        for watch in watch_paths:
+            if cls._is_within(output_path, watch) or cls._is_within(watch, output_path):
+                raise ValueError(
+                    f"Output path {output_path} and watch path {watch} must not overlap"
+                )
+
+    @staticmethod
+    def _file_hash(path):
+        digest = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @classmethod
+    def _files_identical(cls, a, b):
+        """True if both are regular files with identical content."""
+        if os.path.islink(a) or os.path.islink(b):
+            return False
+        if not (os.path.isfile(a) and os.path.isfile(b)):
+            return False
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        return cls._file_hash(a) == cls._file_hash(b)
+
+    def resolve_destination(self, src_path, dest_dir, filename):
+        """
+        Pick a destination path that never overwrites existing data.
+        Returns None if an identical file is already present, otherwise a path
+        that does not exist yet (adding _1, _2, ... on a name collision).
+        """
+        stem, ext = os.path.splitext(filename)
+        candidate = os.path.join(dest_dir, filename)
+        counter = 0
+        while os.path.lexists(candidate):
+            if self._files_identical(src_path, candidate):
+                return None
+            counter += 1
+            candidate = os.path.join(dest_dir, f"{stem}_{counter}{ext}")
+        return candidate
+
+    @staticmethod
+    def _safe_copy(src_path, dest_path):
+        """
+        Copy to a temp file in the destination directory, then publish it under
+        its final name atomically and without ever replacing an existing file.
+        Raises FileExistsError if dest_path appeared in the meantime.
+        """
+        dest_dir = os.path.dirname(dest_path)
+        tmp_path = os.path.join(
+            dest_dir,
+            f".{os.path.basename(dest_path)}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            shutil.copy2(src_path, tmp_path)
+            try:
+                # Fails with FileExistsError if dest_path exists (even as a symlink)
+                os.link(tmp_path, dest_path)
+            except FileExistsError:
+                raise
+            except OSError:
+                # Filesystem without hard link support: reserve the name
+                # exclusively, then move the finished file over the reservation.
+                fd = os.open(dest_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                os.replace(tmp_path, dest_path)
+        finally:
+            if os.path.lexists(tmp_path):
+                os.remove(tmp_path)
 
     def get_file_date(self, file_path):
         """
@@ -103,26 +189,29 @@ class PhotoOrganizer:
             # Get original filename
             filename = os.path.basename(file_path)
             
-            # Create the full destination path
-            dest_path = os.path.join(dest_dir, filename)
-            
-            # Check if destination file already exists
-            if os.path.exists(dest_path):
-                logger.info(f"Skipping file as it already exists at destination: {dest_path}")
-                return
-            
-            # Create directory if it doesn't exist
-            if not os.path.exists(dest_dir) and not self.dry_run:
+            with self._lock:
+                dest_path = self.resolve_destination(file_path, dest_dir, filename)
+                if dest_path is None:
+                    logger.info(f"Skipping {file_path}: identical file already exists in {dest_dir}")
+                    return
+                if os.path.basename(dest_path) != filename:
+                    logger.warning(
+                        f"Name conflict for {file_path}: a different file named {filename} "
+                        f"exists, using {os.path.basename(dest_path)}"
+                    )
+
+                if self.dry_run:
+                    logger.info(f"DRY RUN: Would copy {file_path} to {dest_path}")
+                    return
+
                 os.makedirs(dest_dir, exist_ok=True)
-                logger.debug(f"Created directory: {dest_dir}")
-            
-            # Copy the file
-            if self.dry_run:
-                logger.info(f"DRY RUN: Would copy {file_path} to {dest_path}")
-            else:
-                shutil.copy2(file_path, dest_path)
+                try:
+                    self._safe_copy(file_path, dest_path)
+                except FileExistsError:
+                    logger.warning(f"Destination appeared during copy, not overwriting: {dest_path}")
+                    return
                 logger.info(f"Copied {file_path} to {dest_path}")
-                
+
         except Exception as e:
             logger.error(f"Error organizing file {file_path}: {e}")
 
@@ -176,7 +265,11 @@ def main():
         return
     
     # Create organizer
-    organizer = PhotoOrganizer(watch_paths, output_path, args.dry_run)
+    try:
+        organizer = PhotoOrganizer(watch_paths, output_path, args.dry_run)
+    except ValueError as e:
+        logger.error(str(e))
+        return
     
     # Process existing files if requested
     if args.scan_existing:
