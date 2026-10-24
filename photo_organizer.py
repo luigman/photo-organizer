@@ -8,7 +8,7 @@ import logging
 import argparse
 import signal
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from PIL import Image
@@ -158,6 +158,11 @@ class PhotoOrganizer:
 
     SKIP_LIST_NAME = '.photo-organizer-skiplist.db'
 
+    # Source images dated on these days have bad metadata: file them under
+    # CORRECTED_DATE and rewrite the EXIF date in the copy (time of day is kept).
+    BAD_METADATA_DATES = {date(2022, 10, 21), date(2022, 10, 22), date(2022, 10, 23)}
+    CORRECTED_DATE = date(1996, 1, 1)
+
     # Content-aware duplicate detection settings
     HASH_DISTANCE_THRESHOLD = 6   # max differing bits (of 64) to call two images the same picture
     VIDEO_DURATION_TOLERANCE = 1.0  # seconds
@@ -282,10 +287,12 @@ class PhotoOrganizer:
         return candidate
 
     @staticmethod
-    def _safe_copy(src_path, dest_path):
+    def _safe_copy(src_path, dest_path, post_copy=None):
         """
         Copy to a temp file in the destination directory, then publish it under
         its final name atomically and without ever replacing an existing file.
+        post_copy, if given, is called with the temp file path before publishing
+        (used to fix metadata on the copy; the source is never modified).
         Raises FileExistsError if dest_path appeared in the meantime.
         """
         dest_dir = os.path.dirname(dest_path)
@@ -295,6 +302,8 @@ class PhotoOrganizer:
         )
         try:
             shutil.copy2(src_path, tmp_path)
+            if post_copy is not None:
+                post_copy(tmp_path)
             try:
                 # Fails with FileExistsError if dest_path exists (even as a symlink)
                 os.link(tmp_path, dest_path)
@@ -351,6 +360,29 @@ class PhotoOrganizer:
         file_mtime = os.path.getmtime(file_path)
         return datetime.fromtimestamp(file_mtime)
 
+    def _needs_date_fix(self, file_path, file_date):
+        ext = os.path.splitext(file_path)[1].lower()
+        return (ext in self.supported_extensions['images']
+                and file_date.date() in self.BAD_METADATA_DATES)
+
+    def _fix_copy_date(self, tmp_path, new_date):
+        """Rewrite the EXIF dates and mtime of a copied image (never the source)."""
+        stamp = new_date.strftime('%Y:%m:%d %H:%M:%S').encode()
+        try:
+            try:
+                exif_dict = piexif.load(tmp_path)
+            except Exception:
+                exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, 'Interop': {}, '1st': {}, 'thumbnail': None}
+            exif_dict['0th'][piexif.ImageIFD.DateTime] = stamp
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = stamp
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = stamp
+            piexif.insert(piexif.dump(exif_dict), tmp_path)
+        except Exception as e:
+            # Formats piexif can't write (PNG, GIF, HEIC, ...) keep the folder and mtime fix only
+            logger.warning(f"Could not rewrite EXIF date in copy {tmp_path}: {e!r}")
+        ts = new_date.timestamp()
+        os.utime(tmp_path, (ts, ts))
+
     def organize_file(self, file_path):
         """
         Organize a single file according to its date.
@@ -377,6 +409,15 @@ class PhotoOrganizer:
                 logger.warning(f"Could not determine date for {file_path}, skipping")
                 return
             
+            corrected_date = None
+            if self._needs_date_fix(file_path, file_date):
+                corrected_date = file_date.replace(
+                    year=self.CORRECTED_DATE.year, month=self.CORRECTED_DATE.month,
+                    day=self.CORRECTED_DATE.day)
+                logger.info(f"{file_path} is dated {file_date.date()} (bad metadata), "
+                            f"filing under {corrected_date.date()}")
+                file_date = corrected_date
+
             # Create destination path: output_path/YYYY/YYYY-MM-DD/
             year_dir = str(file_date.year)
             date_dir = file_date.strftime('%Y-%m-%d')
@@ -403,7 +444,8 @@ class PhotoOrganizer:
 
                 os.makedirs(dest_dir, exist_ok=True)
                 try:
-                    self._safe_copy(file_path, dest_path)
+                    post_copy = (lambda tmp: self._fix_copy_date(tmp, corrected_date)) if corrected_date else None
+                    self._safe_copy(file_path, dest_path, post_copy)
                 except FileExistsError:
                     logger.warning(f"Destination appeared during copy, not overwriting: {dest_path}")
                     return
