@@ -69,6 +69,7 @@ The application supports the following command line options:
 
 - `--config PATH`: Path to the configuration file (default: `/app/config.json`)
 - `--dry-run`: Run in dry-run mode (no files will be copied)
+- `--incorrect-meta-dates 2022-10-22,2022-10-23`: Images whose date falls on one of these days are filed under `1996/1996-01-01/` and the copy's EXIF dates are rewritten to 1996-01-01 (source files are never modified). Omit to use the original metadata for every file
 - `--scan-existing`: Scan and process existing files in watch directories at startup
 
 ## Building the container

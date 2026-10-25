@@ -123,10 +123,11 @@ class SkipList:
 
 
 class PhotoOrganizer:
-    def __init__(self, watch_paths, output_path, dry_run=False):
+    def __init__(self, watch_paths, output_path, dry_run=False, incorrect_meta_dates=()):
         self.watch_paths = watch_paths
         self.output_path = output_path
         self.dry_run = dry_run
+        self.incorrect_meta_dates = frozenset(incorrect_meta_dates)
         self._lock = threading.Lock()
         self.validate_paths(watch_paths, output_path)
         self.skip_list = SkipList(os.path.join(output_path, self.SKIP_LIST_NAME), read_only=dry_run)
@@ -137,6 +138,9 @@ class PhotoOrganizer:
         logger.info(f"Photo Organizer initialized with watch paths: {watch_paths}")
         logger.info(f"Output path: {output_path}")
         logger.info(f"Dry run mode: {dry_run}")
+        if self.incorrect_meta_dates:
+            dates = ', '.join(d.isoformat() for d in sorted(self.incorrect_meta_dates))
+            logger.info(f"Treating metadata dates as incorrect, refiling under {self.CORRECTED_DATE}: {dates}")
 
     @staticmethod
     def _is_within(path, parent):
@@ -158,9 +162,8 @@ class PhotoOrganizer:
 
     SKIP_LIST_NAME = '.photo-organizer-skiplist.db'
 
-    # Source images dated on these days have bad metadata: file them under
-    # CORRECTED_DATE and rewrite the EXIF date in the copy (time of day is kept).
-    BAD_METADATA_DATES = {date(2022, 10, 21), date(2022, 10, 22), date(2022, 10, 23)}
+    # Source images dated on any of the configured incorrect-metadata days are filed
+    # under CORRECTED_DATE and get their EXIF date rewritten in the copy (time of day is kept).
     CORRECTED_DATE = date(1996, 1, 1)
 
     # Content-aware duplicate detection settings
@@ -363,7 +366,7 @@ class PhotoOrganizer:
     def _needs_date_fix(self, file_path, file_date):
         ext = os.path.splitext(file_path)[1].lower()
         return (ext in self.supported_extensions['images']
-                and file_date.date() in self.BAD_METADATA_DATES)
+                and file_date.date() in self.incorrect_meta_dates)
 
     def _fix_copy_date(self, tmp_path, new_date):
         """Rewrite the EXIF dates and mtime of a copied image (never the source)."""
@@ -483,6 +486,19 @@ class MediaFileHandler(FileSystemEventHandler):
             logger.debug(f"File moved: {event.dest_path}")
             self.organizer.organize_file(event.dest_path)
 
+def parse_date_list(value):
+    """Parse a comma-separated list of YYYY-MM-DD dates."""
+    dates = set()
+    for item in value.split(','):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            dates.add(datetime.strptime(item, '%Y-%m-%d').date())
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"invalid date '{item}', expected YYYY-MM-DD")
+    return dates
+
 def main():
     parser = argparse.ArgumentParser(description='Photo Organizer')
     parser.add_argument('--config', type=str, default='/app/config.json', 
@@ -491,6 +507,11 @@ def main():
                         help='Perform a dry run without copying files')
     parser.add_argument('--scan-existing', action='store_true', 
                         help='Scan existing files in watch directories on startup')
+    parser.add_argument('--incorrect-meta-dates', type=parse_date_list, default=set(),
+                        metavar='YYYY-MM-DD[,YYYY-MM-DD...]',
+                        help='Comma-separated dates whose image metadata is known to be wrong. '
+                             'Images dated on these days are filed under 1996-01-01 and their copy '
+                             'gets that EXIF date. Default: none (original metadata is used)')
     args = parser.parse_args()
     
     # Load configuration
@@ -510,7 +531,7 @@ def main():
     
     # Create organizer
     try:
-        organizer = PhotoOrganizer(watch_paths, output_path, args.dry_run)
+        organizer = PhotoOrganizer(watch_paths, output_path, args.dry_run, args.incorrect_meta_dates)
     except ValueError as e:
         logger.error(str(e))
         return
